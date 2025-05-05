@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <!-- إعدادات iPhone Web App -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="لوحة المشتريات">
+  <link rel="apple-touch-icon" href="icon.png">
+  <meta charset="UTF-8">
+  <title>لوحة المشتريات مع تعديل وتصدير</title>
+
+  <!-- DataTables -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      font-family: 'Tahoma', sans-serif;
+      background-color: #f2f2f2;
+      margin: 0;
+      padding: 20px;
+      color: #333;
+    }
+    header {
+      background-color: #4CAF50;
+      color: white;
+      padding: 15px;
+      font-size: 24px;
+      text-align: center;
+      border-radius: 5px;
+      margin-bottom: 20px;
+    }
+    .upload-box {
+      background: white;
+      padding: 15px;
+      border-radius: 6px;
+      text-align: center;
+      margin-bottom: 20px;
+      box-shadow: 0 0 5px rgba(0,0,0,0.1);
+    }
+    table {
+      width: 100%;
+      background: white;
+      border-collapse: collapse;
+      margin-top: 20px;
+    }
+    td[contenteditable] {
+      background-color: #fef7e0;
+    }
+    .action-btns {
+      margin-top: 40px;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .export-btn, .add-row-btn, .delete-row-btn {
+      padding: 10px 20px;
+      background-color: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    th.selected, td.selected {
+      background-color: #ffcaca !important;
+    }
+  </style>
+</head>
+<body>
+  <header>لوحة المشتريات وتحليل الفروع</header>
+
+  <div class="upload-box">
+    <label for="excelFile">اختر ملف Excel (.xlsx):</label><br>
+    <input type="file" id="excelFile" accept=".xlsx" />
+  </div>
+
+  <table id="excelTable" class="display">
+    <thead id="tableHead"></thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+
+  <canvas id="branchChart" width="400" height="200" style="margin-top: 40px;"></canvas>
+
+  <div class="action-btns">
+    <button class="add-row-btn" onclick="addNewRow()">➕ إضافة صف جديد</button>
+    <button class="delete-row-btn" onclick="deleteSelectedRow()">🗑️ حذف الصف(وفوق) المحدد</button>
+    <button class="delete-row-btn" onclick="deleteSelectedColumn()">🗑️ حذف العمود(وفوق) المحدد</button>
+    <button class="export-btn" onclick="exportTableToExcel()">💾 تصدير البيانات إلى Excel</button>
+  </div>
+
+  <script>
+    let currentHeaders = [];
+    let branchChart = null;
+
+    document.getElementById('excelFile').addEventListener('change', function (e) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = function (evt) {
+        const data = evt.target.result;
+        const workbook = XLSX.read(data, { type: 'binary' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+        renderExcelData(jsonData);
+      };
+      reader.readAsBinaryString(file);
+    });
+
+    function renderExcelData(data) {
+      localStorage.removeItem('savedTable');
+      const headers = ['رقم الصنف', ...Object.keys(data[0]).filter(h => h !== 'رقم الصنف' && h !== 'تقييم الجودة')];
+      currentHeaders = headers;
+
+      let theadHTML = '<tr>' + headers.map(h => '<th>' + h + '</th>').join('') + '</tr>';
+      let tbodyHTML = data.map((row, index) => {
+        let rowHTML = '<tr>';
+        rowHTML += `<td contenteditable="true">${index + 1}</td>`;
+        headers.slice(1).forEach(h => {
+          const cellValue = row[h] ?? '';
+          rowHTML += `<td contenteditable="true">${cellValue}</td>`;
+        });
+        return rowHTML + '</tr>';
+      }).join('');
+
+      document.getElementById('tableHead').innerHTML = theadHTML;
+      document.getElementById('tableBody').innerHTML = tbodyHTML;
+
+      if ($.fn.DataTable.isDataTable('#excelTable')) {
+        $('#excelTable').DataTable().destroy();
+      }
+      $('#excelTable').DataTable({
+        language: {
+          search: "بحث:",
+          lengthMenu: "عرض _MENU_ صف",
+          info: "عرض _START_ إلى _END_ من أصل _TOTAL_ صف",
+          paginate: {
+            first: "الأولى",
+            last: "الأخيرة",
+            next: "التالي",
+            previous: "السابق"
+          }
+        }
+      });
+
+      const totalsByBranch = {};
+      data.forEach(row => {
+        const branch = row['الفرع'] || 'غير محدد';
+        const total = parseFloat(row['الإجمالي (ريال)']) || 0;
+        totalsByBranch[branch] = (totalsByBranch[branch] || 0) + total;
+      });
+
+      const labels = Object.keys(totalsByBranch);
+      const values = Object.values(totalsByBranch);
+
+      const ctx = document.getElementById('branchChart').getContext('2d');
+      if (branchChart && typeof branchChart.destroy === 'function') branchChart.destroy();
+      branchChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'إجمالي المشتريات (ريال)',
+            data: values,
+            backgroundColor: 'rgba(75, 192, 192, 0.6)'
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { display: true },
+            title: { display: true, text: 'إجمالي المشتريات حسب الفرع' }
+          },
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+
+      document.querySelectorAll('td[contenteditable]').forEach(cell => {
+        cell.addEventListener('input', saveTableToLocalStorage);
+        cell.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            saveTableToLocalStorage();
+            cell.blur();
+          }
+        });
+      });
+    }
+
+    function saveTableToLocalStorage() {
+      const rows = Array.from(document.querySelectorAll('#excelTable tbody tr')).map(tr =>
+        Array.from(tr.children).map(td => td.innerText)
+      );
+      localStorage.setItem('savedTable', JSON.stringify(rows));
+    }
+
+    window.addEventListener('load', () => {
+      const saved = localStorage.getItem('savedTable');
+      if (saved) {
+        const rows = JSON.parse(saved);
+        const tbody = document.getElementById('tableBody');
+        tbody.innerHTML = rows.map(row =>
+          '<tr>' + row.map(cell => `<td contenteditable="true">${cell}</td>`).join('') + '</tr>'
+        ).join('');
+        document.querySelectorAll('td[contenteditable]').forEach(cell => {
+          cell.addEventListener('input', saveTableToLocalStorage);
+          cell.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              saveTableToLocalStorage();
+              cell.blur();
+            }
+          });
+        });
+      }
+    });
+
+    function exportTableToExcel() {
+      const table = document.getElementById("excelTable");
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.table_to_sheet(table);
+      XLSX.utils.book_append_sheet(wb, ws, "المشتريات");
+      XLSX.writeFile(wb, "مشتريات_معدلة.xlsx");
+    }
+
+    function addNewRow() {
+      if (currentHeaders.length === 0) return alert("يرجى رفع ملف أولاً.");
+      const newRow = document.createElement('tr');
+      currentHeaders.forEach(() => {
+        const cell = document.createElement('td');
+        cell.contentEditable = true;
+        cell.addEventListener('input', saveTableToLocalStorage);
+        cell.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            saveTableToLocalStorage();
+            cell.blur();
+          }
+        });
+        cell.innerText = "";
+        newRow.appendChild(cell);
+      });
+      document.getElementById('tableBody').appendChild(newRow);
+    }
+
+    function deleteSelectedRow() {
+      document.querySelectorAll('tr.selected').forEach(row => row.remove());
+      saveTableToLocalStorage();
+    }
+
+    function deleteSelectedColumn() {
+      const selectedHeaders = Array.from(document.querySelectorAll('thead th.selected'));
+      if (selectedHeaders.length === 0) return alert("يرجى تحديد عمود واحد على الأقل.");
+
+      const colIndices = selectedHeaders.map(th => Array.from(th.parentElement.children).indexOf(th));
+
+      document.querySelectorAll('tr').forEach(row => {
+        colIndices.slice().reverse().forEach(idx => {
+          if (row.children[idx]) row.children[idx].remove();
+        });
+      });
+      saveTableToLocalStorage();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.addEventListener('click', e => {
+        if (e.target.tagName === 'TD') {
+          document.querySelectorAll('tr').forEach(r => r.classList.remove('selected'));
+          document.querySelectorAll('td').forEach(td => td.classList.remove('selected'));
+          e.target.classList.add('selected');
+          e.target.parentElement.classList.add('selected');
+        }
+        if (e.target.tagName === 'TH') {
+          document.querySelectorAll('th').forEach(th => th.classList.remove('selected'));
+          e.target.classList.add('selected');
+        }
+      });
+    });
+  </script>
+</body>
+</html>
